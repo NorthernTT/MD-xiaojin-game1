@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>焦皮大王想要一个小金</title>
+  <style>
+    /* 可爱搞怪风：圆角、浅色系、微动效 */
+    :root{
+      --bg:#f9fbff; --card:#ffffff; --text:#0f172a; --muted:#64748b;
+      --brand:#22d3ee; --agree:#22c55e; --deny:#ef4444; --border:#e5e7eb;
+      --shadow:0 10px 30px rgba(2,6,23,.08);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+      color:var(--text);
+      background: radial-gradient(1200px 600px at 50% -10%, #e6f2ff 0%, var(--bg) 60%);
+      display:grid; place-items:center; padding:24px;
+    }
+    .card{ width:min(760px,94vw); background:var(--card); border:1px solid var(--border); border-radius:22px; padding:24px; box-shadow:var(--shadow);}
+    .title{ font-size:26px; font-weight:900; letter-spacing:.3px; display:flex; align-items:center; gap:8px;}
+    .tag{ display:inline-block; font-size:12px; color:#063; background:linear-gradient(90deg,#a7f3d0,#86efac); padding:4px 8px; border-radius:999px; font-weight:800;}
+    .toolbar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
+    input[type="text"]{ padding:10px 12px; border:1px solid var(--border); border-radius:12px; width:160px; outline:none; font-size:14px; box-shadow:inset 0 1px 0 rgba(2,6,23,.03);}
+    .btn{ appearance:none; border:none; cursor:pointer; padding:12px 16px; border-radius:12px; font-size:14px; font-weight:800; color:#0b1220;
+      background:#f1f5f9; transition:transform .05s ease, filter .15s ease, box-shadow .2s ease; box-shadow:var(--shadow);}
+    .btn:hover{ filter:brightness(1.04)}
+    .btn:active{ transform:translateY(1px)}
+    .btn[disabled]{ opacity:.5; cursor:not-allowed;}
+    .agree{ background:linear-gradient(180deg,#a7f3d0,#86efac); color:#064e3b}
+    .deny{ background:linear-gradient(180deg,#fecaca,#fca5a5); color:#7f1d1d}
+    .choices{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px;}
+    .result{ margin-top:14px; font-size:16px; background:#f8fafc; border:1px dashed var(--border); border-radius:14px; padding:14px 16px;}
+    .muted{ color:var(--muted)}
+    .coin{ display:inline-block; margin-left:6px; transform:translateY(2px)}
+    @keyframes shake {10%,90%{transform:translateX(-1px)} 20%,80%{transform:translateX(2px)} 30%,50%,70%{transform:translateX(-4px)} 40%,60%{transform:translateX(4px)}}
+    .shake{ animation:shake .5s ease both}
+  </style>
+</head>
+<body>
+  <main class="card" role="main" aria-labelledby="title">
+    <div class="title" id="title">焦皮大王想要一个小金 <span class="tag">选择题</span></div>
+
+    <div class="toolbar">
+      <input id="roomInput" type="text" placeholder="输入房间号，如 001" />
+      <button class="btn" id="joinRoomBtn">加入房间</button>
+      <button class="btn" id="copyLinkBtn">复制链接</button>
+      <span id="roomDisplay" class="muted"></span>
+    </div>
+
+    <div class="choices" aria-label="选项">
+      <button class="btn agree" id="yesBtn" aria-label="愿意按钮" disabled>愿意</button>
+      <button class="btn deny" id="noBtn" aria-label="不愿意按钮" disabled>不愿意</button>
+    </div>
+
+    <div class="result" id="result" aria-live="polite">等待加入房间…</div>
+    <div class="result" id="stats" aria-live="polite" style="display:none">统计：愿意 0 | 不愿意 0</div>
+    <div id="debug" class="muted" style="margin-top:8px; font-size:12px; white-space:pre-wrap; display:none"></div>
+  </main>
+
+  <!-- Firebase CDN（compat 版本） -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script>
+    // Firebase 配置（你的项目）
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyAiovEuo9kAPcu3s3W_xK6DCeOcQk94Azc",
+      authDomain: "md-dianjing.firebaseapp.com",
+      databaseURL: "https://md-dianjing-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "md-dianjing",
+      storageBucket: "md-dianjing.firebasestorage.app",
+      messagingSenderId: "53239068991",
+      appId: "1:53239068991:web:b3288aeebe46eb851bfb8a"
+    };
+
+    // DOM
+    const yesBtn = document.getElementById('yesBtn');
+    const noBtn  = document.getElementById('noBtn');
+    const result = document.getElementById('result');
+    const stats  = document.getElementById('stats');
+    const roomInput = document.getElementById('roomInput');
+    const joinRoomBtn = document.getElementById('joinRoomBtn');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const roomDisplay = document.getElementById('roomDisplay');
+    const dbgEl = document.getElementById('debug');
+
+    // 状态
+    let app = null, db = null, roomRef = null, membersRef = null, presenceRef = null;
+    const DEFAULT_ROOM = '100'; // 默认房间号（自动带上）
+    let roomId = new URLSearchParams(location.search).get('room') || DEFAULT_ROOM;
+    const clientId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+
+    const coin = () => '<span class="coin">🪙</span>';
+    const setButtonsEnabled = (enabled) => { yesBtn.disabled = !enabled; noBtn.disabled = !enabled; };
+
+    function updateRoomDisplay(count){
+      if (!roomId) { roomDisplay.textContent = '未加入房间'; return; }
+      roomDisplay.textContent = count >= 3
+        ? `✅ 已加入房间：${roomId}（当前人数 ${count}）`
+        : `✅ 已加入房间：${roomId} ｜ ⏳ 等待其他玩家加入…（当前人数 ${count}）`;
+    }
+
+    function initFirebase(){
+      try{
+        if(!FIREBASE_CONFIG || !FIREBASE_CONFIG.apiKey) return false;
+        if(!app) app = firebase.initializeApp(FIREBASE_CONFIG);
+        db = firebase.database();
+        return true;
+      }catch(e){ console.warn('Firebase 初始化失败：', e); return false; }
+    }
+
+    function subscribeRoom(id){
+      if(!db) return false;
+      if(roomRef) roomRef.off();
+      if(membersRef) membersRef.off();
+
+      // 根节点存在性
+      db.ref('xiaojin').transaction(v => v || {});
+
+      // 房间节点
+      roomRef = db.ref('xiaojin/rooms/' + id);
+      membersRef = db.ref('xiaojin/rooms/' + id + '/members');
+
+      // 初始化计数
+      roomRef.child('agree').transaction(v => v || 0);
+      roomRef.child('deny').transaction(v => v || 0);
+      roomRef.child('last').transaction(v => v || '等待加入房间…');
+
+      // 订阅变化
+      roomRef.on('value', s => {
+        const v = s.val(); if(!v) return;
+        if(v.last) result.textContent = v.last;
+        if(typeof v.agree === 'number' && typeof v.deny === 'number'){
+          stats.style.display = '';
+          stats.textContent = `统计：愿意 ${v.agree} | 不愿意 ${v.deny}`;
+        }
+      });
+
+      // 在线成员数量
+      membersRef.on('value', snap => {
+        const obj = snap.val() || {}; const count = Object.keys(obj).length;
+        updateRoomDisplay(count); setButtonsEnabled(count >= 3);
+        try{ dbgEl.textContent = `[debug]\nroom:${roomId}\nclientId:${clientId}\nmembers:${JSON.stringify(obj,null,2)}`; }catch(_){}
+      });
+
+      // Presence：立即 set + 断线删除 + 心跳（稳）
+      presenceRef = membersRef.child(clientId);
+      presenceRef.set({ online: true, ts: firebase.database.ServerValue.TIMESTAMP });
+      presenceRef.onDisconnect().remove();
+      setInterval(() => { try{ presenceRef.child('ts').set(firebase.database.ServerValue.TIMESTAMP); }catch(_){} }, 30000);
+    }
+
+    function joinRoom(id){
+      roomId = (id || '').trim(); if(!roomId){ alert('请输入房间号'); return; }
+      const url = new URL(location.href); url.searchParams.set('room', roomId); history.replaceState({}, '', url);
+      const ok = initFirebase(); if(!ok){ result.textContent = '未配置 Firebase 或初始化失败'; setButtonsEnabled(false); return; }
+      subscribeRoom(roomId);
+    }
+
+    // 交互
+    roomInput.value = roomId;     // 默认展示房号 100
+    joinRoom(roomId);             // 自动加入
+
+    joinRoomBtn.addEventListener('click', () => joinRoom(roomInput.value));
+    copyLinkBtn.addEventListener('click', async () => {
+      const id = roomInput.value.trim() || DEFAULT_ROOM;
+      const urlObj = new URL(location.href); urlObj.searchParams.set('room', id); const link = urlObj.href;
+      try{ await navigator.clipboard.writeText(link); alert('已复制：' + link); }catch(e){ prompt('复制失败，请手动复制：', link); }
+    });
+
+    // 选择
+    yesBtn.addEventListener('click', () => {
+      if(yesBtn.disabled) return;
+      const text = '结果：扣一个小金 ' + coin();
+      result.innerHTML = text;
+      if(roomRef){ roomRef.transaction(cur => { cur = cur || {agree:0, deny:0, last:'', ts:0}; cur.agree=(cur.agree||0)+1; cur.last='结果：扣一个小金'; cur.ts=Date.now(); return cur; }); }
+    });
+    noBtn.addEventListener('click', () => {
+      if(noBtn.disabled) return;
+      const text = '结果：扣两个小金 ' + coin() + coin();
+      result.innerHTML = text; result.classList.add('shake'); setTimeout(()=>result.classList.remove('shake'), 520);
+      if(navigator && navigator.vibrate){ try{ navigator.vibrate([80,40,80]); }catch(_){} }
+      if(roomRef){ roomRef.transaction(cur => { cur = cur || {agree:0, deny:0, last:'', ts:0}; cur.deny=(cur.deny||0)+1; cur.last='结果：扣两个小金'; cur.ts=Date.now(); return cur; }); }
+    });
+
+    // 调试面板：长按标题 0.8s 开关
+    (function(){
+      const titleEl = document.getElementById('title');
+      let t=null; const toggle=()=>{ dbgEl.style.display = dbgEl.style.display ? '' : 'none'; };
+      titleEl.addEventListener('mousedown', ()=>{ t=setTimeout(toggle,800); });
+      titleEl.addEventListener('mouseup', ()=> clearTimeout(t));
+      titleEl.addEventListener('mouseleave', ()=> clearTimeout(t));
+      console.log('[INIT] ready, room =', roomId);
+    })();
+  </script>
+</body>
+</html>
